@@ -42,9 +42,9 @@ def add_class_to_package(class_codes, class_names, module_name: str, package_dir
 If you spot a bug, please report it on the mailing list and/or change the generator.\"\"\"\n\n"""
     )
     imports = """\
-from nipype.interfaces.base import (CommandLine, CommandLineInputSpec, SEMLikeCommandLine, TraitedSpec,
-                    File, Directory, traits, isdefined, InputMultiPath, OutputMultiPath)
-import os\n\n\n"""
+import pydra
+from pydra.engine import specs
+import attr\n\n\n"""
     f_m.write(imports)
     f_m.write("\n\n".join(class_codes))
     f_i.write(f"from {module_name} import {', '.join(class_names)}\n")
@@ -209,6 +209,9 @@ def generate_class(
                 name = longFlagName
                 name = force_to_valid_python_variable_name(name)
                 traitsParams["argstr"] = "--" + longFlagName + " "
+
+
+                ### new part
             else:
                 name = param.getElementsByTagName("name")[0].firstChild.nodeValue
                 name = force_to_valid_python_variable_name(name)
@@ -221,7 +224,7 @@ def generate_class(
                 param.getElementsByTagName("description")
                 and param.getElementsByTagName("description")[0].firstChild
             ):
-                traitsParams["desc"] = (
+                traitsParams["help_string"] = (
                     param.getElementsByTagName("description")[0]
                     .firstChild.nodeValue.replace('"', '\\"')
                     .replace("\n", ", ")
@@ -260,7 +263,7 @@ def generate_class(
 
             desc = param.getElementsByTagName("description")
             if index:
-                traitsParams["desc"] = desc[0].firstChild.nodeValue
+                traitsParams["help_string"] = desc[0].firstChild.nodeValue
 
             typesDict = {
                 "integer": "traits.Int",
@@ -302,10 +305,10 @@ def generate_class(
                     ]
                 else:
                     values = [typesDict[param.nodeName.replace("-vector", "")]]
-                if mipav_hacks is True:
-                    traitsParams["sep"] = ";"
-                else:
-                    traitsParams["sep"] = ","
+                #if mipav_hacks is True:
+                    #traitsParams["sep"] = ";"
+                #else:
+                    #traitsParams["sep"] = ","
             elif param.getAttribute("multiple") == "true":
                 type = "InputMultiPath"
                 if param.nodeName in [
@@ -347,25 +350,37 @@ def generate_class(
                     param.getElementsByTagName("channel")[0].firstChild.nodeValue
                     == "output"
                 ):
-                    traitsParams["hash_files"] = False
                     inputTraits.append(
-                        "%s = traits.Either(traits.Bool, %s(%s), %s)"
+                        """(
+        "%s", 
+        attr.ib(
+            type=%s,
+            metadata={
+                %s
+            }
+        ),
+    ),"""
                         % (
                             name,
                             type,
-                            parse_values(values).replace("exists=True", ""),
                             parse_params(traitsParams),
                         )
                     )
                     traitsParams["exists"] = True
                     traitsParams.pop("argstr")
-                    traitsParams.pop("hash_files")
                     outputTraits.append(
-                        "%s = %s(%s%s)"
+                        """(
+        "%s", 
+        attr.ib(
+            type=%s,
+            metadata={
+                %s
+            }
+        ),
+    ),"""
                         % (
                             name,
                             type.replace("Input", "Output"),
-                            parse_values(values),
                             parse_params(traitsParams),
                         )
                     )
@@ -375,18 +390,17 @@ def generate_class(
                     param.getElementsByTagName("channel")[0].firstChild.nodeValue
                     == "input"
                 ):
-                    if param.nodeName in [
-                        "file",
-                        "directory",
-                        "image",
-                        "geometry",
-                        "transform",
-                        "table",
-                    ] and type not in ["InputMultiPath", "traits.List"]:
-                        traitsParams["exists"] = True
                     inputTraits.append(
-                        "%s = %s(%s%s)"
-                        % (name, type, parse_values(values), parse_params(traitsParams))
+                    """(
+        "%s", 
+        attr.ib(
+            type=%s,
+            metadata={
+                %s
+            }
+        ),
+    ),"""
+                        % (name, type, parse_params(traitsParams))
                     )
                 else:
                     raise RuntimeError(
@@ -396,8 +410,16 @@ def generate_class(
                     )
             else:  # For all other parameter types, they are implicitly only input types
                 inputTraits.append(
-                    "%s = %s(%s%s)"
-                    % (name, type, parse_values(values), parse_params(traitsParams))
+                    """(
+        "%s", 
+        attr.ib(
+            type=%s,
+            metadata={
+                %s
+            }
+        ),
+    ),"""
+                        % (name, type, parse_params(traitsParams))
                 )
 
     if mipav_hacks:
@@ -407,19 +429,17 @@ def generate_class(
         ]
 
         compulsory_inputs = [
-            'xDefaultMem = traits.Int(desc="Set default maximum heap size", argstr="-xDefaultMem %d")',
-            'xMaxProcess = traits.Int(1, desc="Set default maximum number of processes.", argstr="-xMaxProcess %d", usedefault=True)',
+            'xDefaultMem = traits.Int(help_string="Set default maximum heap size", argstr="-xDefaultMem %d")',
+            'xMaxProcess = traits.Int(1, help_string="Set default maximum number of processes.", argstr="-xMaxProcess %d", usedefault=True)',
         ]
         inputTraits += compulsory_inputs
 
-    input_spec_code = "class " + module_name + "InputSpec(CommandLineInputSpec):\n"
+    input_spec_code = "input_fields = [\n"
     for trait in inputTraits:
         input_spec_code += "    " + trait + "\n"
 
-    output_spec_code = "class " + module_name + "OutputSpec(TraitedSpec):\n"
-    if not outputTraits:
-        output_spec_code += "    pass\n"
-    else:
+    output_spec_code = "output_fields = [\n"
+    if outputTraits:
         for trait in outputTraits:
             output_spec_code += "    " + trait + "\n"
 
@@ -429,27 +449,31 @@ def generate_class(
     )
     output_filenames_code += "}"
 
-    input_spec_code += "\n\n"
-    output_spec_code += "\n\n"
+    input_spec_code += "]\n\n"
+    output_spec_code += "]\n\n"
 
-    template = """class %module_name%(SEMLikeCommandLine):
-    %class_str%
+    input_spec_pdr_str = ""
+    intput_spec_str = ""
+    if inputTraits:
+        input_spec_pdr_str = 'input_spec_pdr = specs.SpecInfo(name="Input", fields=input_fields, bases=(specs.ShellSpec,))'
+        input_spec_str = 'input_spec=input_spec_pdr,'
+    output_spec_pdr_str = ""
+    output_spec_str = ""
+    if outputTraits:
+        output_spec_pdr_str = 'output_spec_pdr = specs.SpecInfo(name="Output", fields=output_fields, bases=(specs.ShellSpec,))'        
+        output_spec_str = 'output_spec=output_spec_pdr'
+    task_string = """\
+%s
+%s
 
-    input_spec = %module_name%InputSpec
-    output_spec = %module_name%OutputSpec
-    _cmd = "%launcher% %name% "
-    %output_filenames_code%\n"""
-    template += "    _redirect_x = {0}\n".format(str(redirect_x))
+%s_task = pydra.ShellCommandTask(
+    name="%s",
+    executable=" %s ", 
+    %s
+    %s
+)""" % (input_spec_pdr_str, output_spec_pdr_str, module, module, module, input_spec_str, output_spec_str)
 
-    main_class = (
-        template.replace("%class_str%", class_string)
-        .replace("%module_name%", module_name)
-        .replace("%name%", module)
-        .replace("%output_filenames_code%", output_filenames_code)
-        .replace("%launcher%", " ".join(launcher))
-    )
-
-    return category, input_spec_code + output_spec_code + main_class, module_name
+    return category, input_spec_code + output_spec_code + task_string, module_name
 
 
 def grab_xml(module, launcher, xml_dir: str =None, mipav_hacks=False):
@@ -508,11 +532,11 @@ def parse_params(params):
     list = []
     for key, value in params.items():
         if isinstance(value, (str, bytes)):
-            list.append('%s="%s"' % (key, value.replace('"', "'")))
+            list.append('"%s": "%s"' % (key, value.replace('"', "'")))
         else:
-            list.append("%s=%s" % (key, value))
+            list.append('"%s": %s' % (key, value))
 
-    return ", ".join(list)
+    return ",\n                ".join(list)
 
 
 def parse_values(values):
@@ -548,8 +572,124 @@ if __name__ == "__main__":
     # every tool in the modules list must be found on the default path
     # AND calling the module with --xml must be supported and compliant.
     modules_list = [
+        "ACPCTransform",
+        "AddScalarVolumes",
+        "BRAINSABC",
+        "BRAINSAlignMSP",
+        "BRAINSCleanMask",
+        "BRAINSClipInferior",
+        "BRAINSConstellationDetector",
+        "BRAINSConstellationDetectorGUI",
+        "BRAINSConstellationLandmarksTransform",
+        "BRAINSConstellationModeler",
+        "BRAINSCreateLabelMapFromProbabilityMaps",
+        "BRAINSDWICleanup",
+        "BRAINSEyeDetector",
         "BRAINSFit",
+        "BRAINSInitializedControlPoints",
         "BRAINSLabelStats",
+        "BRAINSLandmarkInitializer",
+        "BRAINSLinearModelerEPCA",
+        "BRAINSLmkTransform",
+        "BRAINSMultiModeSegment",
+        "BRAINSMultiSTAPLE",
+        "BRAINSMush",
+        "BRAINSPosteriorToContinuousClass",
+        "BRAINSROIAuto",
+        "BRAINSResample",
+        "BRAINSResize",
+        "BRAINSSnapShotWriter",
+        "BRAINSStripRotation",
+        "BRAINSTalairach",
+        "BRAINSTalairachMask",
+        "BRAINSTransformConvert",
+        "BRAINSTransformFromFiducials",
+        "BRAINSTrimForegroundInDirection",
+        "BinaryMaskEditorBasedOnLandmarks",
+        "CLIROITest",
+        "CastScalarVolume",
+        "CheckerBoardFilter",
+        "ComputeReflectiveCorrelationMetric",
+        "CreateDICOMSeries",
+        "CurvatureAnisotropicDiffusion",
+        "DWICompare",
+        "DWIConvert",
+        "DWISimpleCompare",
+        "DiffusionTensorTest",
+        "ESLR",
+        "ExecutionModelTour",
+        "ExpertAutomatedRegistration",
+        "ExtractSkeleton",
+        "FiducialRegistration",
+        "FindCenterOfBrain",
+        "GaussianBlurImageFilter",
+        "GenerateAverageLmkFile",
+        "GenerateEdgeMapImage",
+        "GenerateLabelMapFromProbabilityMap",
+        "GeneratePurePlugMask",
+        "GradientAnisotropicDiffusion",
+        "GrayscaleFillHoleImageFilter",
+        "GrayscaleGrindPeakImageFilter",
+        "GrayscaleModelMaker",
+        "HistogramMatching",
+        "ImageLabelCombine",
+        "LabelMapSmoothing",
+        "LandmarksCompare",
+        "MaskScalarVolume",
+        "MedianImageFilter",
+        "MergeModels",
+        "ModelMaker",
+        "ModelToLabelMap",
+        "MultiplyScalarVolumes",
+        "N4ITKBiasFieldCorrection",
+        "OrientScalarVolume",
+        "PETStandardUptakeValueComputation",
+        "PerformMetricTest",
+        "ProbeVolumeWithModel",
+        "ResampleDTIVolume",
+        "ResampleScalarVectorDWIVolume",
+        "ResampleScalarVolume",
+        "RobustStatisticsSegmenter",
+        "SimpleRegionGrowingSegmentation",
+        "SubtractScalarVolumes",
+        "TestGridTransformRegistration",
+        "ThresholdScalarVolume",
+        "VotingBinaryHoleFillingImageFilter",
+        "compareTractInclusion",
+        "extractNrrdVectorIndex",
+        "fcsv_to_hdf5",
+        "gtractAnisotropyMap",
+        "gtractAverageBvalues",
+        "gtractClipAnisotropy",
+        "gtractCoRegAnatomy",
+        "gtractCoRegAnatomyBspline",
+        "gtractCoRegAnatomyRigid",
+        "gtractConcatDwi",
+        "gtractCopyImageOrientation",
+        "gtractCoregBvalues",
+        "gtractCostFastMarching",
+        "gtractCreateGuideFiber",
+        "gtractFastMarchingTracking",
+        "gtractFiberTracking",
+        "gtractFreeTracking",
+        "gtractGraphSearchTracking",
+        "gtractGuidedTracking",
+        "gtractImageConformity",
+        "gtractInvertBSplineTransform",
+        "gtractInvertDisplacementField",
+        "gtractInvertRigidTransform",
+        "gtractResampleAnisotropy",
+        "gtractResampleB0",
+        "gtractResampleCodeImage",
+        "gtractResampleDWIInPlace",
+        "gtractResampleFibers",
+        "gtractStreamlineTracking",
+        "gtractTensor",
+        "gtractTransformToDisplacementField",
+        "insertMidACPCpoint",
+        "landmarksConstellationAligner",
+        "landmarksConstellationWeights",
+        "simpleEM",
     ]
 
     # SlicerExecutionModel compliant tools that are usually statically built, and don't need the Slicer3 --launcher

@@ -129,6 +129,8 @@ if __name__ == "__main__":
     input_spec_pdr = converter_sem(interface_spec=input_spec)
     outpur_spec_pdr = converter_sem(interface_spec=output_spec)
 
+    print(f"\ninput_spec_pdr\n\n{input_spec_pdr}\n")
+    print(f"\noutpur_spec_pdr\n\n{outpur_spec_pdr}\n")
 
     task = pydra.ShellCommandTask(name=interface_name, executable=interface._cmd,
                                   input_spec=input_spec_pdr, output_spec=outpur_spec_pdr)
